@@ -1,7 +1,3 @@
-Here's a complete and detailed `README.md` file for your GitHub repository:
-
----
-
 # 🤖 Wiseiwy Telegram Bot
 
 A custom **Telegram bot** developed using **Node.js** and **node-telegram-bot-api** to manage users and digital giftcard transactions in the **WISEIWY** community. This bot includes powerful admin and user panels to handle giftcard sales, rate management, user control, and invoicing.
