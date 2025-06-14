@@ -7,17 +7,67 @@ const {
 const { calculateGiftcard } = require("../services/priceCalculator");
 
 const USERS_PER_PAGE = 7;
-
+const adminActions = {};
 const handleCallbackQuery = async (bot, query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
     const data = query.data;
 
     if (data.startsWith("users_page_")) {
+        // Handle all users pages
         const page = parseInt(data.replace("users_page_", ""), 10);
         await bot.deleteMessage(chatId, messageId);
         await sendUserPage(bot, chatId, page);
+    } else if (data === "confirm_yes") {
+        const actions = adminActions[chatId];
+
+        if (!actions)
+            return await bot.sendMessage(
+                chatId,
+                "حدث خطأ يرجى إعادة تشغيل البوت بإستخدام /start"
+            );
+
+        if (actions.type === "delete_user") {
+            const { userId } = actions;
+            await User.deleteOne({ userId });
+            await bot.deleteMessage(chatId, messageId);
+            await bot.sendMessage(chatId, `🗑️ تم حذف المستخدم بنجاح`);
+        } else if (actions.type === "make_admin") {
+            const { userId } = actions;
+            await bot.deleteMessage(chatId, messageId);
+            await User.findOneAndUpdate({ userId: userId }, { isAdmin: true });
+            await bot.sendMessage(chatId, `👤 المستخدم أصبح مشرف `);
+        } else if (actions.type === "make_user") {
+            const { userId } = actions;
+            await bot.deleteMessage(chatId, messageId);
+            await User.findOneAndUpdate({ userId: userId }, { isAdmin: false });
+            bot.sendMessage(chatId, `👤 المستخدم لم يعد مشرف `);
+        } else if (actions.type === "delete_card") {
+            const { userId, cardId } = actions;
+            const user = await User.findOne({ userId });
+            const deleteCard = await user.giftcards.id(cardId).deleteOne();
+            await user.save();
+
+            await bot.deleteMessage(chatId, messageId);
+            await bot.sendMessage(chatId, `تم حذف البطاقة`, {
+                parse_mode: "Markdown",
+            });
+        } else if (actions.type === "delete_all_cards") {
+            const { userId } = actions;
+            await User.findOneAndUpdate({ userId }, { giftcards: [] });
+            await bot.deleteMessage(chatId, messageId);
+            bot.sendMessage(chatId, `تم حذف كل البطاقات`, {
+                parse_mode: "Markdown",
+            });
+        }
+
+        delete adminActions[chatId];
+    } else if (data === "confirm_cancel") {
+        await bot.deleteMessage(chatId, messageId);
+        await bot.sendMessage(chatId, "تم الالغاء");
+        sendUserPage(bot, chatId, 0);
     } else if (data.startsWith("user_info_")) {
+        // Handle info for the choosen user
         await bot.deleteMessage(chatId, messageId);
         const userId = data.split("user_info_")[1];
         const user = await User.findOne({ userId });
@@ -62,6 +112,7 @@ const handleCallbackQuery = async (bot, query) => {
             reply_markup: { inline_keyboard: buttons },
         });
     } else if (data.startsWith("show_cards_")) {
+        //Show giftcards that are sent by a user
         await bot.deleteMessage(chatId, messageId);
         const userId = data.split("show_cards_")[1];
         const user = await User.findOne({ userId });
@@ -69,8 +120,10 @@ const handleCallbackQuery = async (bot, query) => {
         if (!user || user.giftcards.length === 0) {
             return bot.sendMessage(chatId, "❌ لا توجد بطاقات.");
         }
+
         sendCardsPage(bot, chatId, user);
     } else if (data.startsWith("calc_cards_")) {
+        // Calculate the total price of the giftcards
         const userId = data.split("calc_cards_")[1];
         const user = await User.findOne({ userId });
         const rate = await Rate.findOne({ currency: "USD" });
@@ -127,24 +180,33 @@ const handleCallbackQuery = async (bot, query) => {
             },
         });
     } else if (data.startsWith("delete_user_")) {
+        // Delete selected user
         await bot.deleteMessage(chatId, messageId);
+
         const userId = data.split("delete_user_")[1];
-        await User.deleteOne({ userId });
-        bot.sendMessage(chatId, `🗑️ تم حذف المستخدم بنجاح`);
+        adminActions[chatId] = { type: "delete_card", userId };
+        confirmation(bot, chatId);
     } else if (data.startsWith("back_to_users")) {
+        // Back to users menu
         await bot.deleteMessage(chatId, messageId);
         await sendUserPage(bot, chatId, 0);
     } else if (data.startsWith("make_admin_")) {
         await bot.deleteMessage(chatId, messageId);
+
+        // TO ADD =>> confirmation before make admin
         const userId = data.split("make_admin_")[1];
-        await User.findOneAndUpdate({ userId: userId }, { isAdmin: true });
-        bot.sendMessage(chatId, `👤 المستخدم أصبح مشرف `);
+
+        adminActions[chatId] = { type: "make_admin", userId };
+        confirmation(bot, chatId);
     } else if (data.startsWith("make_user_")) {
         await bot.deleteMessage(chatId, messageId);
+
+        // TO ADD =>> confirmation before make user
         const userId = data.split("make_user_")[1];
-        await User.findOneAndUpdate({ userId: userId }, { isAdmin: false });
-        bot.sendMessage(chatId, `👤 المستخدم لم يعد مشرف `);
+        adminActions[chatId] = { type: "make_user", userId };
+        confirmation(bot, chatId);
     } else if (data.startsWith("edit_country_")) {
+        //
         const country = data.replace("edit_country_", "");
         const types = await GiftCard.find({ country }).distinct("type");
 
@@ -189,8 +251,10 @@ const handleCallbackQuery = async (bot, query) => {
             }
         );
     } else if (data.startsWith("edit_card_")) {
+        // Manange giftcard
         const userId = data.split("_").slice(2)[0];
         const cardId = data.split("_").slice(2)[1];
+
         const user = await User.findOne({ userId });
         const card = await user.giftcards.id(cardId);
         const resp = `البطاقة المحددة:\n\nاسم المستخدم: ${user.username} \nبلد البطاقة: ${card.country} \nنوع البطاقة: ${card.type} \nقيمة البطاقة: ${card.value} \nرمز البطاقة: ${card.pin} \nرابط البطاقة: ${card.link}`;
@@ -215,25 +279,18 @@ const handleCallbackQuery = async (bot, query) => {
             },
         });
     } else if (data.startsWith("delete_card_")) {
+        await bot.deleteMessage(chatId, messageId);
         const userId = data.split("_").slice(2)[0];
         const cardId = data.split("_").slice(2)[1];
-        const user = await User.findOne({ userId });
-        const deleteCard = await user.giftcards.id(cardId).deleteOne();
-        await user.save();
-        const resp = `تم حذف البطاقة`;
 
-        await bot.deleteMessage(chatId, messageId);
-        await bot.sendMessage(chatId, resp, {
-            parse_mode: "Markdown",
-        });
+        adminActions[chatId] = { type: "delete_card", userId, cardId };
+        confirmation(bot, chatId);
     } else if (data.startsWith("delete_all_cards_")) {
-        const userId = data.split("_").slice(3)[0];
-        console.log(userId);
-        await User.findOneAndUpdate({ userId }, { giftcards: [] });
         await bot.deleteMessage(chatId, messageId);
-        bot.sendMessage(chatId, `تم حذف كل البطاقات`, {
-            parse_mode: "Markdown",
-        });
+        const userId = data.split("_").slice(3)[0];
+
+        adminActions[chatId] = { userId, type: "delete_all_cards" };
+        confirmation(bot, chatId);
     } else if (data.startsWith("send_bill_")) {
         const userId = data.split("_").slice(2)[0];
         //await bot.deleteMessage(chatId, messageId);
@@ -248,6 +305,7 @@ const handleCallbackQuery = async (bot, query) => {
     }
 };
 
+// Users Pages Menu
 const sendUserPage = async (bot, chatId, page) => {
     try {
         const totalUsers = await User.countDocuments();
@@ -306,6 +364,7 @@ const sendUserPage = async (bot, chatId, page) => {
     }
 };
 
+// Countries Menu
 const sendCountryPage = async (bot, chatId) => {
     const countries = await GiftCard.distinct("country");
     const keyboard = countries
@@ -320,6 +379,7 @@ const sendCountryPage = async (bot, chatId) => {
     });
 };
 
+// Giftcards Menu
 const sendCardsPage = async (bot, chatId, user) => {
     const tempKeyboard = user.giftcards.map((card, i) => [
         {
@@ -342,6 +402,30 @@ const sendCardsPage = async (bot, chatId, user) => {
     const keyboard = [...tempKeyboard, extraButtons];
 
     bot.sendMessage(chatId, `📦 بطاقات:\n`, {
+        parse_mode: "Markdown",
+        reply_markup: {
+            inline_keyboard: keyboard,
+        },
+    });
+};
+
+// Confirmation Menu
+const confirmation = async (bot, chatId) => {
+    const keyboard = [
+        [
+            {
+                text: `نعم ✅`,
+                callback_data: `confirm_yes`,
+            },
+
+            {
+                text: "الغاء ❌",
+                callback_data: `confirm_cancel`,
+            },
+        ],
+    ];
+
+    await bot.sendMessage(chatId, `*هل أنت متأكد ؟*`, {
         parse_mode: "Markdown",
         reply_markup: {
             inline_keyboard: keyboard,
